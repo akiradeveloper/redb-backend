@@ -52,21 +52,41 @@ impl Reaper {
 struct LogStore {
     db: Arc<Database>,
     space: String,
+    reaper_queue: mpsc::Sender<LazyEntry>,
+    insert_lazy: bool,
 }
 impl LogStore {
     fn table_def(&self) -> TableDefinition<u64, Vec<u8>> {
         TableDefinition::new(&self.space)
     }
-}
-#[async_trait]
-impl RaftLogStore for LogStore {
-    async fn insert_entry(&self, i: Index, e: Entry) -> Result<()> {
+    async fn insert_entry_immediate(&self, i: Index, e: Entry) -> Result<()> {
         let tx = self.db.begin_write()?;
         {
             let mut tbl = tx.open_table(self.table_def())?;
             tbl.insert(i, entry::ser(e))?;
         }
         tx.commit()?;
+        Ok(())
+    }
+    async fn insert_entry_lazy(&self, i: Index, e: Entry) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        let e = LazyEntry {
+            inner: e,
+            space: self.space.clone(),
+            notifier: tx,
+        };
+        self.reaper_queue.send(e).ok();
+        Ok(())
+    }
+}
+#[async_trait]
+impl RaftLogStore for LogStore {
+    async fn insert_entry(&self, i: Index, e: Entry) -> Result<()> {
+        if self.insert_lazy {
+            self.insert_entry_lazy(i, e).await?;
+        } else {
+            self.insert_entry_immediate(i, e).await?;
+        }
         Ok(())
     }
     async fn delete_entries_before(&self, i: Index) -> Result<()> {
@@ -148,11 +168,18 @@ impl RaftBallotStore for BallotStore {
     }
 }
 
-pub fn new(db: redb::Database, lane_id: u32) -> (impl RaftLogStore, impl RaftBallotStore) {
+pub fn new(
+    db: redb::Database,
+    lane_id: u32,
+    insert_lazy: bool,
+) -> (impl RaftLogStore, impl RaftBallotStore) {
     let db = Arc::new(db);
+    let (tx, rx) = mpsc::channel();
     let log = LogStore {
         space: format!("log-{lane_id}"),
         db: db.clone(),
+        reaper_queue: tx,
+        insert_lazy,
     };
     let ballot = BallotStore {
         space: format!("ballot-{lane_id}"),
