@@ -2,15 +2,50 @@ use anyhow::Result;
 use async_trait::async_trait;
 use lolraft::process::*;
 use redb::{Database, ReadableTable, TableDefinition};
+use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 mod entry {
     use lolraft::process::Entry;
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct OnDiskStruct {}
     pub fn ser(x: Entry) -> Vec<u8> {
         todo!()
     }
     pub fn desr(bin: &[u8]) -> Entry {
         todo!()
+    }
+}
+
+struct LazyEntry {
+    inner: Entry,
+    space: String,
+    notifier: oneshot::Sender<()>,
+}
+struct Reaper {
+    db: Arc<Database>,
+    recv: mpsc::Receiver<LazyEntry>,
+}
+impl Reaper {
+    fn table_def(space: &str) -> TableDefinition<u64, Vec<u8>> {
+        TableDefinition::new(space)
+    }
+    fn reap(&self, du: Duration) -> Result<()> {
+        let deadline = Instant::now() + du;
+        let mut notifiers = vec![];
+        let tx = self.db.begin_write()?;
+        while let Ok(e) = self.recv.recv_timeout(deadline - Instant::now()) {
+            let mut tbl = tx.open_table(Self::table_def(&e.space))?;
+            tbl.insert(0, entry::ser(e.inner))?;
+            notifiers.push(e.notifier);
+        }
+        tx.commit()?;
+
+        for notifier in notifiers {
+            notifier.send(()).ok();
+        }
+        Ok(())
     }
 }
 
@@ -73,6 +108,8 @@ impl RaftLogStore for LogStore {
 
 mod ballot {
     use lolraft::process::Ballot;
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct OnDiskStruct {}
     pub fn ser(x: Ballot) -> Vec<u8> {
         todo!()
     }
