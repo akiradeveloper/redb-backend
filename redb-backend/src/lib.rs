@@ -19,6 +19,7 @@ mod entry {
 }
 
 struct LazyEntry {
+    index: Index,
     inner: Entry,
     space: String,
     notifier: oneshot::Sender<()>,
@@ -37,7 +38,7 @@ impl Reaper {
         let tx = self.db.begin_write()?;
         while let Ok(e) = self.recv.recv_timeout(deadline - Instant::now()) {
             let mut tbl = tx.open_table(Self::table_def(&e.space))?;
-            tbl.insert(0, entry::ser(e.inner))?;
+            tbl.insert(e.index, entry::ser(e.inner))?;
             notifiers.push(e.notifier);
         }
         tx.commit()?;
@@ -71,6 +72,7 @@ impl LogStore {
     async fn insert_entry_lazy(&self, i: Index, e: Entry) -> Result<()> {
         let (tx, rx) = oneshot::channel();
         let e = LazyEntry {
+            index: i,
             inner: e,
             space: self.space.clone(),
             notifier: tx,
@@ -168,22 +170,40 @@ impl RaftBallotStore for BallotStore {
     }
 }
 
-pub fn new(
-    db: redb::Database,
-    lane_id: u32,
-    insert_lazy: bool,
-) -> (impl RaftLogStore, impl RaftBallotStore) {
-    let db = Arc::new(db);
-    let (tx, rx) = mpsc::channel();
-    let log = LogStore {
-        space: format!("log-{lane_id}"),
-        db: db.clone(),
-        reaper_queue: tx,
-        insert_lazy,
-    };
-    let ballot = BallotStore {
-        space: format!("ballot-{lane_id}"),
-        db: db.clone(),
-    };
-    (log, ballot)
+pub struct DB {
+    db: Arc<redb::Database>,
+    tx: mpsc::Sender<LazyEntry>,
+}
+impl DB {
+    pub fn new(redb: redb::Database) -> Self {
+        let db = Arc::new(redb);
+
+        let (tx, rx) = mpsc::channel();
+        let reaper = Reaper {
+            db: db.clone(),
+            recv: rx,
+        };
+        std::thread::spawn(move || loop {
+            reaper.reap(Duration::from_millis(100)).ok();
+        });
+
+        Self { db, tx }
+    }
+    pub fn get(
+        &self,
+        lane_id: u32,
+        insert_lazy: bool,
+    ) -> (impl RaftLogStore, impl RaftBallotStore) {
+        let log = LogStore {
+            space: format!("log-{lane_id}"),
+            db: self.db.clone(),
+            reaper_queue: self.tx.clone(),
+            insert_lazy,
+        };
+        let ballot = BallotStore {
+            space: format!("ballot-{lane_id}"),
+            db: self.db.clone(),
+        };
+        (log, ballot)
+    }
 }
