@@ -28,23 +28,28 @@ impl RaftLogStore for LogStore {
     async fn insert_entry(&self, i: Index, e: Entry) -> Result<()> {
         let tx = self.db.begin_write()?;
         {
-            let tbl = tx.open_table(self.table_def())?;
+            let mut tbl = tx.open_table(self.table_def())?;
+            tbl.insert(i, entry::ser(e))?;
         }
         tx.commit()?;
-        todo!()
+        Ok(())
     }
     async fn delete_entries_before(&self, i: Index) -> Result<()> {
         let tx = self.db.begin_write()?;
         {
-            let tbl = tx.open_table(self.table_def())?;
+            let mut tbl = tx.open_table(self.table_def())?;
+            tbl.retain(|k, _| k >= i)?;
         }
         tx.commit()?;
-        todo!()
+        Ok(())
     }
     async fn get_entry(&self, i: Index) -> Result<Option<Entry>> {
         let tx = self.db.begin_read()?;
         let tbl = tx.open_table(self.table_def())?;
-        todo!()
+        match tbl.get(i)? {
+            Some(bin) => Ok(Some(entry::desr(&bin.value()))),
+            None => Ok(None),
+        }
     }
     async fn get_head_index(&self) -> Result<Index> {
         let tx = self.db.begin_read()?;
@@ -88,17 +93,21 @@ impl BallotStore {
 #[async_trait]
 impl RaftBallotStore for BallotStore {
     async fn save_ballot(&self, ballot: Ballot) -> Result<()> {
-        let def = self.table_def();
         let tx = self.db.begin_write()?;
-        // TODO
+        {
+            let mut tbl = tx.open_table(self.table_def())?;
+            tbl.insert((), ballot::ser(ballot))?;
+        }
         tx.commit()?;
         Ok(())
     }
     async fn load_ballot(&self) -> Result<Ballot> {
-        let def = self.table_def();
         let tx = self.db.begin_read()?;
-        // TODO
-        todo!()
+        let tbl = tx.open_table(self.table_def())?;
+        match tbl.get(())? {
+            Some(bin) => Ok(ballot::desr(&bin.value())),
+            None => Err(anyhow::anyhow!("No ballot")),
+        }
     }
 }
 
