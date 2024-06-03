@@ -7,14 +7,37 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod entry {
-    use lolraft::process::Entry;
+    use super::*;
     #[derive(serde::Deserialize, serde::Serialize)]
-    struct OnDiskStruct {}
+    struct OnDiskStruct {
+        prev_term: u64,
+        cur_index: u64,
+        cur_term: u64,
+        command: bytes::Bytes,
+    }
     pub fn ser(x: Entry) -> Vec<u8> {
-        todo!()
+        let x = OnDiskStruct {
+            prev_term: x.prev_clock.term,
+            cur_index: x.this_clock.index,
+            cur_term: x.this_clock.term,
+            command: x.command,
+        };
+        let bin = bincode::serialize(&x).unwrap();
+        bin
     }
     pub fn desr(bin: &[u8]) -> Entry {
-        todo!()
+        let x: OnDiskStruct = bincode::deserialize(bin).unwrap();
+        Entry {
+            prev_clock: Clock {
+                index: x.cur_index - 1,
+                term: x.prev_term,
+            },
+            this_clock: Clock {
+                index: x.cur_index,
+                term: x.prev_term,
+            },
+            command: x.command,
+        }
     }
 }
 
@@ -131,12 +154,24 @@ impl RaftLogStore for LogStore {
 mod ballot {
     use lolraft::process::Ballot;
     #[derive(serde::Deserialize, serde::Serialize)]
-    struct OnDiskStruct {}
+    struct OnDiskStruct {
+        term: u64,
+        voted_for: Option<lolraft::NodeId>,
+    }
     pub fn ser(x: Ballot) -> Vec<u8> {
-        todo!()
+        let x = OnDiskStruct {
+            term: x.cur_term,
+            voted_for: x.voted_for,
+        };
+        let bin = bincode::serialize(&x).unwrap();
+        bin
     }
     pub fn desr(bin: &[u8]) -> Ballot {
-        todo!()
+        let x: OnDiskStruct = bincode::deserialize(bin).unwrap();
+        Ballot {
+            cur_term: x.term,
+            voted_for: x.voted_for,
+        }
     }
 }
 

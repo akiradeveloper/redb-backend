@@ -9,6 +9,7 @@ edition = "2021"
 anyhow = "1.0.86"
 async-trait = "0.1.80"
 bincode = "1.3.3"
+bytes = { version = "1.6.0", features = ["serde"] }
 lolraft = "0.10.2"
 oneshot = "0.1.7"
 redb = "2.1.0"
